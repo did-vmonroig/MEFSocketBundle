@@ -135,23 +135,30 @@ class SocketServer extends SocketBase
 
         $this->socket = socket_create(AF_INET, SOCK_STREAM, 0);
 
-        if(!socket_bind($this->socket, $this->getHost(), $this->getPort())){
+        if (!socket_bind($this->socket, $this->getHost(), $this->getPort())) {
             return false;
         }
 
         socket_listen($this->socket);
 
-        if(!$this->socket){
+        if (!$this->socket) {
             return false;
         }
 
         $this->streams[] = $this->socket;
         $this->socketStreams[] = null;//placeholder to keep sync
 
-        while(true){
-            $this->loop();
+        $return = true;
+        while ($return) {
+            $return = $this->loop();
         }
 
+        $this->logger->warning('Error occurred receiving data. Closing all streams.');
+
+        foreach($this->streams as $stream){
+            @socket_close($stream);
+        }
+        unset($this->socket);
 
     }
 
@@ -166,8 +173,8 @@ class SocketServer extends SocketBase
     {
         $this->logger->debug('entering server broadcast ');
 
-        foreach($this->socketStreams as $stream) {
-            if($stream && method_exists($stream, 'sendMessage')){
+        foreach ($this->socketStreams as $stream) {
+            if ($stream && method_exists($stream, 'sendMessage')) {
                 $stream->sendMessage($message);
             }
         }
@@ -184,14 +191,22 @@ class SocketServer extends SocketBase
     {
         $n = null;
         $streams = $this->streams;
-        $num = socket_select($streams, $n, $n, $n);
+        $num = @socket_select($streams, $n, $n, $n);
 
-        $this->logger->debug('num socks that have changed '. $num);
-        foreach($streams as $stream){
-            if($stream == $this->socket){
+        // In case of error retun it in order to exit loop
+        if ($num === false) {
+            $errorCode = socket_last_error();
+            $errorMsg = socket_strerror($errorCode);
+
+            $this->logger->warning('Error in socket_select: ' . '[' . $errorCode . ']' . $errorMsg);
+            return false;
+        }
+
+        $this->logger->debug('num socks that have changed ' . $num);
+        foreach ($streams as $stream) {
+            if ($stream == $this->socket) {
                 $this->open();
-            }
-            else{
+            } else {
                 $this->readStream($stream);
             }
         }
@@ -211,7 +226,7 @@ class SocketServer extends SocketBase
         $this->dispatch($evt);
         $this->logger->debug('dispatched socket open event');
 
-        if($evt->isValid() && !$socket_stream->isClosed()){
+        if ($evt->isValid() && !$socket_stream->isClosed()) {
             //$stream = $this->createStream($new_stream);
 
             $id = $this->generateStreamId();
@@ -221,8 +236,7 @@ class SocketServer extends SocketBase
             $socket_stream->setId($id);
             $this->socketHash[$id] = $socket_stream;
 
-        }
-        else{
+        } else {
             $this->logger->notify('socket deemed invalid, closing down and rejecting connection');
             $this->close($new_stream);
         }
@@ -269,8 +283,8 @@ class SocketServer extends SocketBase
      */
     protected function close($stream)
     {
-        foreach($this->streams as $index => $loop_stream){
-            if($stream === $loop_stream){
+        foreach ($this->streams as $index => $loop_stream) {
+            if ($stream === $loop_stream) {
                 $socketStream = $this->socketStreams[$index];
                 $id = $socketStream->getId();
                 $socketStream->close();
@@ -296,7 +310,7 @@ class SocketServer extends SocketBase
      */
     protected function shutdown()
     {
-        if($this->socket) {
+        if ($this->socket) {
             socket_close($this->socket);
         }
     }
@@ -318,8 +332,8 @@ class SocketServer extends SocketBase
 
     protected function findStreamByStream($stream)
     {
-        foreach($this->streams as $index => $loopStream){
-            if($loopStream === $stream){
+        foreach ($this->streams as $index => $loopStream) {
+            if ($loopStream === $stream) {
                 return $this->socketStreams[$index];
             }
         }
@@ -336,19 +350,18 @@ class SocketServer extends SocketBase
      */
     protected function readStream($stream)
     {
-        try{
+        try {
             $socketStream = $this->findStreamByStream($stream);
             $message = $socketStream->read();
-        }
-        catch(\ErrorException $ex){
+        } catch (\ErrorException $ex) {
             $this->logger->debug('socket connection has been closed by peer, removing from collection');
             $this->close($stream);
             return;
         }
 
         $input = $this->cleanMessage($message);
-        if(strlen($input) > 0){
-            if($socketStream == false){
+        if (strlen($input) > 0) {
+            if ($socketStream == false) {
                 $this->logger->err('failed to find socket stream by stream');
                 return false;
             }
@@ -366,16 +379,15 @@ class SocketServer extends SocketBase
 
             unset($data);
 
-            if($socketStream->isClosed()){
+            if ($socketStream->isClosed()) {
                 $this->close($stream);
             }
-            $this->logger->debug("Received information from a socket ". substr($input, 0, 35));
+            $this->logger->debug("Received information from a socket " . substr($input, 0, 35));
 
             unset($input);
 
             unset($evt);
-        }
-        else {
+        } else {
             $this->close($stream);
         }
     }
